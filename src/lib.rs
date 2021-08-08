@@ -178,58 +178,62 @@ pub mod voronoi {
                 (right.x - top.x) * (left.x - top.x) + (right.y - top.y) * (left.y - top.y);
             scalar / (top.dist(left) * top.dist(right))
         }
-        fn split_triangle(&mut self, p: Point) -> Vec<(usize, TriangleIndex)> {
-            match self.contains(p) {
-                None => vec![],
-                Some(i) => {
-                    let triangle = &self.triangles[i];
-                    let verts = triangle.vertices;
-                    let j = self.size();
-                    self.points.push(p);
-                    let new_indices = [j, j + 1, j + 2];
-                    if let TriangleStatus::Alive { neighbors } = triangle.alive {
-                        let mut new_triangles = TriangleIndex::build(|n| Triangle {
-                            vertices: [j, n.lookup(verts), n.next().lookup(verts)],
-                            alive: TriangleStatus::Alive {
-                                neighbors: [
-                                    n.lookup(neighbors),
-                                    (n.next().lookup(new_indices), TriangleIndex::Third),
-                                    (n.prev().lookup(new_indices), TriangleIndex::Second),
-                                ],
-                            },
-                        })
-                        .to_vec();
-                        self.triangles.append(&mut new_triangles);
-                        for n in TriangleIndex::all() {
-                            let neighbor_triangle = &self.triangles[n.lookup(neighbors).0];
-                            if let TriangleStatus::Alive { mut neighbors } = neighbor_triangle.alive
-                            {
-                                for n in TriangleIndex::all() {
-                                    *n.lookup_mut(&mut neighbors) =
-                                        (n.lookup(new_indices), TriangleIndex::First);
-                                }
-                            } else {
-                                panic!("Ran into dead neighbor")
+        fn split_triangle(&mut self, p: Point) -> [(usize, TriangleIndex); 3] {
+            if let Some(i) = self.contains(p) {
+                let triangle = &self.triangles[i];
+                let verts = triangle.vertices;
+                let j = self.size();
+                self.points.push(p);
+                let new_indices = [j, j + 1, j + 2];
+                if let TriangleStatus::Alive { neighbors } = triangle.alive {
+                    let mut new_triangles = TriangleIndex::build(|n| Triangle {
+                        vertices: [j, n.lookup(verts), n.next().lookup(verts)],
+                        alive: TriangleStatus::Alive {
+                            neighbors: [
+                                n.lookup(neighbors),
+                                (n.next().lookup(new_indices), TriangleIndex::Third),
+                                (n.prev().lookup(new_indices), TriangleIndex::Second),
+                            ],
+                        },
+                    })
+                    .to_vec();
+                    self.triangles.append(&mut new_triangles);
+                    for n in TriangleIndex::all() {
+                        let neighbor_triangle = &self.triangles[n.lookup(neighbors).0];
+                        if let TriangleStatus::Alive { mut neighbors } = neighbor_triangle.alive {
+                            for n in TriangleIndex::all() {
+                                *n.lookup_mut(&mut neighbors) =
+                                    (n.lookup(new_indices), TriangleIndex::First);
                             }
+                        } else {
+                            panic!("Ran into dead neighbor")
                         }
-                        self.triangles[i].alive = TriangleStatus::Dead {
-                            descendants: new_indices.to_vec(),
-                        };
-                        TriangleIndex::all()
-                            .map(|n| (n.lookup(new_indices), TriangleIndex::First))
-                            .collect()
-                    } else {
-                        panic!("Splitting dead triangle")
                     }
+                    self.triangles[i].alive = TriangleStatus::Dead {
+                        descendants: new_indices.to_vec(),
+                    };
+                    [
+                        (j, TriangleIndex::First),
+                        (j, TriangleIndex::Second),
+                        (j, TriangleIndex::First),
+                    ]
+                } else {
+                    panic!("Splitting dead triangle")
                 }
+            } else {
+                panic!("Splitting at exterior point")
             }
         }
-        fn flip_triangle(&mut self, i: usize, n: TriangleIndex) -> Vec<(usize, TriangleIndex)> {
+        fn flip_triangle(
+            &mut self,
+            i: usize,
+            n: TriangleIndex,
+        ) -> Option<[(usize, TriangleIndex); 2]> {
             let triangle = &self.triangles[i];
             if let TriangleStatus::Alive { neighbors } = triangle.alive {
                 let (i_n, n_n) = n.lookup(neighbors);
                 if i_n == i || self.cos(i, n) >= -self.cos(i_n, n_n) {
-                    return vec![];
+                    return None;
                 }
                 let j = self.points.len();
                 let top = i;
@@ -282,7 +286,7 @@ pub mod voronoi {
                     } else {
                         unreachable!()
                     };
-                    vec![(j, TriangleIndex::Second), (j + 1, TriangleIndex::Third)]
+                    Some([(j, TriangleIndex::Second), (j + 1, TriangleIndex::Third)])
                 } else {
                     unreachable!()
                 }
@@ -291,10 +295,12 @@ pub mod voronoi {
             }
         }
         pub fn insert(&mut self, p: Point) {
-            let mut queue = self.split_triangle(p);
-            match queue.pop() {
-                None => return,
-                Some((i, n)) => queue.append(&mut self.flip_triangle(i, n)),
+            let mut queue: std::collections::VecDeque<(usize, TriangleIndex)> =
+                std::array::IntoIter::new(self.split_triangle(p)).collect();
+            while let Some((i, n)) = queue.pop_front() {
+                for &(i_new, n_new) in self.flip_triangle(i, n).iter().flatten() {
+                    queue.push_back((i_new, n_new))
+                }
             }
         }
         pub fn nearest_neighbour(&self, p: Point) -> (usize, f64) {
