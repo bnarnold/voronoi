@@ -1,5 +1,8 @@
 pub mod voronoi {
     use std::iter;
+    use svg::node::element::path::Data;
+    use svg::node::element::Path;
+    use svg::Document;
     #[derive(Copy, Clone, Debug)]
     pub struct Point {
         x: f64,
@@ -33,6 +36,7 @@ pub mod voronoi {
     pub struct Delauney {
         points: Vec<Point>,
         triangles: Vec<Triangle>,
+        bounds: [Bounds; 2],
     }
     #[derive(Copy, Clone, Debug, PartialEq, Eq)]
     enum TriangleIndex {
@@ -127,6 +131,7 @@ pub mod voronoi {
             Delauney {
                 points,
                 triangles: vec![bottom, top],
+                bounds,
             }
         }
         pub fn contains(&self, p: Point) -> Option<usize> {
@@ -191,7 +196,7 @@ pub mod voronoi {
                         vertices: [k, n.next().lookup(verts), n.prev().lookup(verts)],
                         alive: TriangleStatus::Alive {
                             neighbors: [
-                                n.lookup(old_neighbors),
+                                None,
                                 Some((n.next().lookup(new_indices), TriangleIndex::Third)),
                                 Some((n.prev().lookup(new_indices), TriangleIndex::Second)),
                             ],
@@ -200,17 +205,10 @@ pub mod voronoi {
                     .to_vec();
                     self.triangles.append(&mut new_triangles);
                     for n in TriangleIndex::all() {
-                        if let Some((i_n, n_n)) = n.lookup(old_neighbors) {
-                            let neighbor_triangle = &mut self.triangles[i_n];
-                            if let TriangleStatus::Alive { ref mut neighbors } =
-                                neighbor_triangle.alive
-                            {
-                                *n_n.lookup_mut(neighbors) =
-                                    Some((n.lookup(new_indices), TriangleIndex::First));
-                            } else {
-                                panic!("Ran into dead neighbor {:?}", self.triangles)
-                            }
-                        }
+                        self.link_half_edges(
+                            (n.lookup(new_indices), TriangleIndex::First),
+                            n.lookup(old_neighbors),
+                        );
                     }
                     self.triangles[i].alive = TriangleStatus::Dead {
                         start: j,
@@ -226,6 +224,25 @@ pub mod voronoi {
                 }
             } else {
                 None
+            }
+        }
+
+        fn link_half_edges(
+            &mut self,
+            start: (usize, TriangleIndex),
+            end_opt: Option<(usize, TriangleIndex)>,
+        ) -> () {
+            if let TriangleStatus::Alive { ref mut neighbors } = self.triangles[start.0].alive {
+                *(start.1).lookup_mut(neighbors) = end_opt;
+            } else {
+                unreachable!()
+            };
+            if let Some(end) = end_opt {
+                if let TriangleStatus::Alive { ref mut neighbors } = self.triangles[end.0].alive {
+                    *(end.1).lookup_mut(neighbors) = Some(start);
+                } else {
+                    unreachable!()
+                }
             }
         }
 
@@ -254,40 +271,32 @@ pub mod voronoi {
                             Triangle {
                                 vertices: [top, left, bottom],
                                 alive: TriangleStatus::Alive {
-                                    neighbors: [
-                                        n_n.next().lookup(neighbors_n),
-                                        Some((j + 1, TriangleIndex::Third)),
-                                        n.prev().lookup(neighbors),
-                                    ],
+                                    neighbors: [None, Some((j + 1, TriangleIndex::Third)), None],
                                 },
                             },
                             Triangle {
                                 vertices: [top, bottom, right],
                                 alive: TriangleStatus::Alive {
-                                    neighbors: [
-                                        n_n.prev().lookup(neighbors_n),
-                                        n.next().lookup(neighbors),
-                                        Some((j, TriangleIndex::Second)),
-                                    ],
+                                    neighbors: [None, None, Some((j, TriangleIndex::Second))],
                                 },
                             },
                         ];
                         self.triangles.append(&mut new_triangles);
-                        if let TriangleStatus::Alive { ref mut neighbors } = self.triangles[i].alive
-                        {
-                            *n.next().lookup_mut(neighbors) = Some((j + 1, TriangleIndex::Second));
-                            *n.prev().lookup_mut(neighbors) = Some((j, TriangleIndex::Third));
-                        } else {
-                            unreachable!()
-                        };
-                        if let TriangleStatus::Alive { ref mut neighbors } =
-                            self.triangles[i_n].alive
-                        {
-                            *n_n.next().lookup_mut(neighbors) = Some((j, TriangleIndex::First));
-                            *n_n.prev().lookup_mut(neighbors) = Some((j + 1, TriangleIndex::First));
-                        } else {
-                            unreachable!()
-                        };
+
+                        self.link_half_edges(
+                            (j, TriangleIndex::First),
+                            n_n.next().lookup(neighbors_n),
+                        );
+                        self.link_half_edges((j, TriangleIndex::Third), n.prev().lookup(neighbors));
+                        self.link_half_edges(
+                            (j + 1, TriangleIndex::First),
+                            n_n.prev().lookup(neighbors_n),
+                        );
+                        self.link_half_edges(
+                            (j + 1, TriangleIndex::Second),
+                            n.next().lookup(neighbors),
+                        );
+
                         self.triangles[i].alive = TriangleStatus::Dead {
                             start: j,
                             end: j + 2,
@@ -314,6 +323,7 @@ pub mod voronoi {
                 queue.push_back((i_new, n_new))
             }
             while let Some((i, n)) = queue.pop_front() {
+                let _x = dbg!(&self.triangles);
                 for &(i_new, n_new) in self.flip_triangle(i, n).iter().flatten() {
                     queue.push_back((i_new, n_new))
                 }
@@ -338,6 +348,50 @@ pub mod voronoi {
                 panic!("{:?} was outside bounds", p)
             }
         }
+
+        fn generate_triangle(&self, i: usize) -> Option<Path> {
+            match self.triangles[i].alive {
+                TriangleStatus::Dead { .. } => None,
+                TriangleStatus::Alive { .. } => {
+                    let points: Vec<(f64, f64)> = self.triangles[i]
+                        .vertices
+                        .iter()
+                        .map(|k| self.points[*k].into())
+                        .collect();
+                    let data = Data::new()
+                        .move_to(points[0])
+                        .line_to(points[1])
+                        .line_to(points[2])
+                        .close();
+                    let path = Path::new()
+                        .set("fill", "none")
+                        .set("stroke", "black")
+                        .set("stroke-width", 1)
+                        .set("stroke-linejoin", "round")
+                        .set("d", data);
+                    Some(path)
+                }
+            }
+        }
+
+        fn save_svg(&self, filename: String) -> () {
+            let mut document = Document::new().set(
+                "viewBox",
+                (
+                    self.bounds[0].min,
+                    self.bounds[1].min,
+                    self.bounds[0].max - self.bounds[0].min,
+                    self.bounds[1].max - self.bounds[1].min,
+                ),
+            );
+            for i in 0..(self.triangles.len()) {
+                if let Some(p) = self.generate_triangle(i) {
+                    document = document.add(p);
+                }
+            }
+            let _x = dbg!(&filename);
+            svg::save(filename, &document).unwrap();
+        }
     }
 
     impl Point {
@@ -346,6 +400,12 @@ pub mod voronoi {
         }
         fn ccw(self, p1: Point, p2: Point) -> bool {
             return (p2.x - self.x) * (p1.y - self.y) <= (p2.y - self.y) * (p1.x - self.x);
+        }
+    }
+
+    impl From<Point> for (f64, f64) {
+        fn from(p: Point) -> (f64, f64) {
+            (p.x, p.y)
         }
     }
 
@@ -425,20 +485,23 @@ pub mod voronoi {
 
         #[test]
         fn test_insert_many() {
-            const N: usize = 10;
+            const N: usize = 1000;
             const SEED: u64 = 333;
             let mut rng = Pcg64::seed_from_u64(SEED);
 
             let bounds = Bounds {
-                min: -1.0,
-                max: 2.0,
+                min: -100.0,
+                max: 1200.0,
             };
 
             let mut delauney = Delauney::from_box([bounds, bounds]);
-            for _ in 0..N {
+            for i in 0..N {
                 let p = Point {
-                    x: rng.gen_range(0.0..1.0),
-                    y: rng.gen_range(0.0..1.0),
+                    x: rng.gen_range(0.0..1000.0),
+                    y: rng.gen_range(0.0..1000.0),
+                };
+                if 0 == (i + 1) % 10 {
+                    delauney.save_svg(format!("./test{}.svg", i))
                 };
                 delauney.insert(p)
             }
