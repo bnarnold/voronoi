@@ -134,18 +134,18 @@ pub mod voronoi {
                 bounds,
             }
         }
-        pub fn contains(&self, p: Point) -> Option<usize> {
-            let mut i: usize = 0;
-            if !(self.triangle_contains(i, p)) {
-                if self.triangle_contains(1, p) {
-                    i = 1;
-                } else {
-                    return None;
-                }
-            }
+        pub fn contains(&self, p: Point) -> usize {
+            debug_assert!((0..4)
+                .zip(1..5)
+                .all(|(j1, j2)| self.points[j1].ccw(self.points[j2 % 4], p)));
+            let mut i: usize = if self.points[0].ccw(self.points[2], p) {
+                1
+            } else {
+                0
+            };
             loop {
                 match self.triangles[i].alive {
-                    TriangleStatus::Alive { .. } => return Some(i),
+                    TriangleStatus::Alive { .. } => return i,
                     TriangleStatus::Dead { start, end } => {
                         for j in start..end {
                             if self.triangle_contains(j, p) {
@@ -157,6 +157,10 @@ pub mod voronoi {
                     }
                 }
             }
+        }
+
+        pub fn points(&self) -> impl Iterator<Item = &Point> {
+            self.points.iter()
         }
 
         fn triangle_contains(&self, i: usize, p: Point) -> bool {
@@ -181,49 +185,46 @@ pub mod voronoi {
         }
 
         fn split_triangle(&mut self, p: Point) -> Option<[(usize, TriangleIndex); 3]> {
-            if let Some(i) = self.contains(p) {
-                let triangle = &self.triangles[i];
-                let verts = triangle.vertices;
-                let j = self.triangles.len();
-                let k = self.size();
-                self.points.push(p);
-                let new_indices = [j, j + 1, j + 2];
-                if let TriangleStatus::Alive {
-                    neighbors: old_neighbors,
-                } = triangle.alive
-                {
-                    let mut new_triangles = TriangleIndex::build(|n| Triangle {
-                        vertices: [k, n.next().lookup(verts), n.prev().lookup(verts)],
-                        alive: TriangleStatus::Alive {
-                            neighbors: [
-                                None,
-                                Some((n.next().lookup(new_indices), TriangleIndex::Third)),
-                                Some((n.prev().lookup(new_indices), TriangleIndex::Second)),
-                            ],
-                        },
-                    })
-                    .to_vec();
-                    self.triangles.append(&mut new_triangles);
-                    for n in TriangleIndex::all() {
-                        self.link_half_edges(
-                            (n.lookup(new_indices), TriangleIndex::First),
-                            n.lookup(old_neighbors),
-                        );
-                    }
-                    self.triangles[i].alive = TriangleStatus::Dead {
-                        start: j,
-                        end: j + 3,
-                    };
-                    Some([
-                        (j, TriangleIndex::First),
-                        (j + 1, TriangleIndex::First),
-                        (j + 2, TriangleIndex::First),
-                    ])
-                } else {
-                    panic!("Splitting dead triangle")
+            let i = self.contains(p);
+            let triangle = &self.triangles[i];
+            let verts = triangle.vertices;
+            let j = self.triangles.len();
+            let k = self.size();
+            self.points.push(p);
+            let new_indices = [j, j + 1, j + 2];
+            if let TriangleStatus::Alive {
+                neighbors: old_neighbors,
+            } = triangle.alive
+            {
+                let mut new_triangles = TriangleIndex::build(|n| Triangle {
+                    vertices: [k, n.next().lookup(verts), n.prev().lookup(verts)],
+                    alive: TriangleStatus::Alive {
+                        neighbors: [
+                            None,
+                            Some((n.next().lookup(new_indices), TriangleIndex::Third)),
+                            Some((n.prev().lookup(new_indices), TriangleIndex::Second)),
+                        ],
+                    },
+                })
+                .to_vec();
+                self.triangles.append(&mut new_triangles);
+                for n in TriangleIndex::all() {
+                    self.link_half_edges(
+                        (n.lookup(new_indices), TriangleIndex::First),
+                        n.lookup(old_neighbors),
+                    );
                 }
+                self.triangles[i].alive = TriangleStatus::Dead {
+                    start: j,
+                    end: j + 3,
+                };
+                Some([
+                    (j, TriangleIndex::First),
+                    (j + 1, TriangleIndex::First),
+                    (j + 2, TriangleIndex::First),
+                ])
             } else {
-                None
+                panic!("Splitting dead triangle")
             }
         }
 
@@ -329,23 +330,20 @@ pub mod voronoi {
             }
         }
         pub fn nearest_neighbour(&self, p: Point) -> (usize, f64) {
-            if let Some(i_tri) = self.contains(p) {
-                let triangle = &self.triangles[i_tri];
-                let (d_min, i) = triangle
-                    .vertices
-                    .iter()
-                    .map(|&i| (self.points[i].dist(p), i))
-                    .fold((f64::INFINITY, 0), |(d1, i1), (d2, i2)| {
-                        if d1 <= d2 {
-                            (d1, i1)
-                        } else {
-                            (d2, i2)
-                        }
-                    });
-                (i, d_min)
-            } else {
-                panic!("{:?} was outside bounds", p)
-            }
+            let i_tri = self.contains(p);
+            let triangle = &self.triangles[i_tri];
+            let (d_min, i) = triangle
+                .vertices
+                .iter()
+                .map(|&i| (self.points[i].dist(p), i))
+                .fold((f64::INFINITY, 0), |(d1, i1), (d2, i2)| {
+                    if d1 <= d2 {
+                        (d1, i1)
+                    } else {
+                        (d2, i2)
+                    }
+                });
+            (i, d_min)
         }
 
         fn generate_triangle(&self, i: usize) -> Option<Path> {
@@ -373,7 +371,7 @@ pub mod voronoi {
             }
         }
 
-        fn save_svg(&self, filename: String) -> () {
+        pub fn save_svg(&self, filename: String) -> () {
             let mut document = Document::new().set(
                 "viewBox",
                 (
@@ -431,15 +429,12 @@ pub mod voronoi {
         }
 
         #[test]
+        #[should_panic]
         fn test_contains() {
-            let p = Point { x: 0.3, y: 0.4 };
-            let q = Point { x: 0.9, y: 0.2 };
             let r = Point { x: 2.0, y: 0.5 };
             let bounds = Bounds { min: 0.0, max: 1.0 };
             let delauney = Delauney::from_box([bounds, bounds]);
-            assert_eq!(delauney.contains(p), Some(1));
-            assert_eq!(delauney.contains(q), Some(0));
-            assert_eq!(delauney.contains(r), None);
+            let _i = delauney.contains(r);
         }
         #[test]
         fn test_nearest_neighbour_box() {
@@ -466,19 +461,15 @@ pub mod voronoi {
         }
 
         #[test]
-        fn test_insert_inside_outside() {
+        fn test_insert_few() {
             let p = Point { x: 0.3, y: 0.4 };
             let q = Point { x: 0.9, y: 0.2 };
-            let r = Point { x: 2.0, y: 0.5 };
             let bounds = Bounds { min: 0.0, max: 1.0 };
             let mut delauney = Delauney::from_box([bounds, bounds]);
 
             delauney.insert(p);
-            assert!(delauney.contains(q).is_some());
             delauney.insert(q);
             assert_eq!(delauney.size(), 6);
-            delauney.insert(r);
-            assert_eq!(delauney.points.len(), 6);
         }
 
         fn random_delauney(n: usize) -> Delauney {
@@ -503,14 +494,14 @@ pub mod voronoi {
 
         #[test]
         fn test_insert_many() {
-            const N: usize = 200_000;
+            const N: usize = 50_000;
             let delauney = random_delauney(N);
             assert_eq!(delauney.size(), N + 4);
         }
 
         #[test]
         fn test_nearest_neighbour() {
-            const N: usize = 200_000;
+            const N: usize = 50_000;
             let delauney = random_delauney(N);
             const SEED: u64 = 3;
             let mut rng = Pcg64::seed_from_u64(SEED);
