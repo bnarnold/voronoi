@@ -9,10 +9,11 @@ pub mod voronoi {
     #[derive(Clone, Debug)]
     enum TriangleStatus {
         Alive {
-            neighbors: [(usize, TriangleIndex); 3],
+            neighbors: [Option<(usize, TriangleIndex)>; 3],
         },
         Dead {
-            descendants: Vec<usize>,
+            start: usize,
+            end: usize,
         },
     }
 
@@ -71,7 +72,7 @@ pub mod voronoi {
                 TriangleIndex::Third => array[2],
             }
         }
-        fn lookup_ref<'a, T>(self, array: &'a [T; 3]) -> &'a T {
+        fn _lookup_ref<'a, T>(self, array: &'a [T; 3]) -> &'a T {
             match self {
                 TriangleIndex::First => &array[0],
                 TriangleIndex::Second => &array[1],
@@ -107,21 +108,13 @@ pub mod voronoi {
             let bottom = Triangle {
                 vertices: [0, 1, 2],
                 alive: TriangleStatus::Alive {
-                    neighbors: [
-                        (0, TriangleIndex::First),
-                        (1, TriangleIndex::Third),
-                        (0, TriangleIndex::Third),
-                    ],
+                    neighbors: [None, Some((1, TriangleIndex::Third)), None],
                 },
             };
             let top = Triangle {
                 vertices: [0, 2, 3],
                 alive: TriangleStatus::Alive {
-                    neighbors: [
-                        (1, TriangleIndex::First),
-                        (1, TriangleIndex::Second),
-                        (0, TriangleIndex::Second),
-                    ],
+                    neighbors: [None, None, Some((0, TriangleIndex::Second))],
                 },
             };
             let xs = [bounds[0].min, bounds[0].max, bounds[0].max, bounds[0].min];
@@ -146,10 +139,10 @@ pub mod voronoi {
                 }
             }
             loop {
-                match &self.triangles[i].alive {
+                match self.triangles[i].alive {
                     TriangleStatus::Alive { .. } => return Some(i),
-                    TriangleStatus::Dead { descendants } => {
-                        for &j in descendants {
+                    TriangleStatus::Dead { start, end } => {
+                        for j in start..end {
                             if self.triangle_contains(j, p) {
                                 i = j;
                                 break;
@@ -178,50 +171,54 @@ pub mod voronoi {
                 (right.x - top.x) * (left.x - top.x) + (right.y - top.y) * (left.y - top.y);
             scalar / (top.dist(left) * top.dist(right))
         }
-        fn split_triangle(&mut self, p: Point) -> [(usize, TriangleIndex); 3] {
+        fn split_triangle(&mut self, p: Point) -> Option<[(usize, TriangleIndex); 3]> {
             if let Some(i) = self.contains(p) {
                 let triangle = &self.triangles[i];
                 let verts = triangle.vertices;
-                let j = self.size();
+                let j = self.triangles.len();
+                let k = self.size();
                 self.points.push(p);
                 let new_indices = [j, j + 1, j + 2];
                 if let TriangleStatus::Alive { neighbors } = triangle.alive {
                     let mut new_triangles = TriangleIndex::build(|n| Triangle {
-                        vertices: [j, n.lookup(verts), n.next().lookup(verts)],
+                        vertices: [k, n.lookup(verts), n.next().lookup(verts)],
                         alive: TriangleStatus::Alive {
                             neighbors: [
                                 n.lookup(neighbors),
-                                (n.next().lookup(new_indices), TriangleIndex::Third),
-                                (n.prev().lookup(new_indices), TriangleIndex::Second),
+                                Some((n.next().lookup(new_indices), TriangleIndex::Third)),
+                                Some((n.prev().lookup(new_indices), TriangleIndex::Second)),
                             ],
                         },
                     })
                     .to_vec();
                     self.triangles.append(&mut new_triangles);
                     for n in TriangleIndex::all() {
-                        let neighbor_triangle = &self.triangles[n.lookup(neighbors).0];
-                        if let TriangleStatus::Alive { mut neighbors } = neighbor_triangle.alive {
-                            for n in TriangleIndex::all() {
-                                *n.lookup_mut(&mut neighbors) =
-                                    (n.lookup(new_indices), TriangleIndex::First);
+                        if let Some((i_n, n_n)) = n.lookup(neighbors) {
+                            let neighbor_triangle = &mut self.triangles[i_n];
+                            if let TriangleStatus::Alive { ref mut neighbors } =
+                                neighbor_triangle.alive
+                            {
+                                *n_n.lookup_mut(neighbors) =
+                                    Some((n.lookup(new_indices), TriangleIndex::First));
+                            } else {
+                                panic!("Ran into dead neighbor {:?}", self.triangles)
                             }
-                        } else {
-                            panic!("Ran into dead neighbor")
                         }
                     }
                     self.triangles[i].alive = TriangleStatus::Dead {
-                        descendants: new_indices.to_vec(),
+                        start: j,
+                        end: j + 3,
                     };
-                    [
+                    Some([
                         (j, TriangleIndex::First),
-                        (j, TriangleIndex::Second),
-                        (j, TriangleIndex::First),
-                    ]
+                        (j + 1, TriangleIndex::First),
+                        (j + 2, TriangleIndex::First),
+                    ])
                 } else {
                     panic!("Splitting dead triangle")
                 }
             } else {
-                panic!("Splitting at exterior point")
+                None
             }
         }
         fn flip_triangle(
@@ -231,72 +228,82 @@ pub mod voronoi {
         ) -> Option<[(usize, TriangleIndex); 2]> {
             let triangle = &self.triangles[i];
             if let TriangleStatus::Alive { neighbors } = triangle.alive {
-                let (i_n, n_n) = n.lookup(neighbors);
-                if i_n == i || self.cos(i, n) >= -self.cos(i_n, n_n) {
-                    return None;
-                }
-                let j = self.points.len();
-                let top = i;
-                let bottom = i_n;
-                let left = n.next().lookup(triangle.vertices);
-                let right = n.prev().lookup(triangle.vertices);
-                if let TriangleStatus::Alive {
-                    neighbors: neighbors_n,
-                } = self.triangles[i_n].alive
-                {
-                    let new_indices = [j, j + 1];
-                    let mut new_triangles = vec![
-                        Triangle {
-                            vertices: [top, left, bottom],
-                            alive: TriangleStatus::Alive {
-                                neighbors: [
-                                    n_n.next().lookup(neighbors_n),
-                                    (j + 1, TriangleIndex::Third),
-                                    n.prev().lookup(neighbors),
-                                ],
+                if let Some((i_n, n_n)) = n.lookup(neighbors) {
+                    if self.cos(i, n) >= -self.cos(i_n, n_n) {
+                        return None;
+                    }
+                    let j = self.triangles.len();
+                    let top = n.lookup(triangle.vertices);
+                    let bottom = n_n.lookup(self.triangles[i_n].vertices);
+                    let left = n.next().lookup(triangle.vertices);
+                    let right = n.prev().lookup(triangle.vertices);
+                    if let TriangleStatus::Alive {
+                        neighbors: neighbors_n,
+                    } = self.triangles[i_n].alive
+                    {
+                        let mut new_triangles = vec![
+                            Triangle {
+                                vertices: [top, left, bottom],
+                                alive: TriangleStatus::Alive {
+                                    neighbors: [
+                                        n_n.next().lookup(neighbors_n),
+                                        Some((j + 1, TriangleIndex::Third)),
+                                        n.prev().lookup(neighbors),
+                                    ],
+                                },
                             },
-                        },
-                        Triangle {
-                            vertices: [top, bottom, right],
-                            alive: TriangleStatus::Alive {
-                                neighbors: [
-                                    n_n.prev().lookup(neighbors_n),
-                                    n.next().lookup(neighbors),
-                                    (j, TriangleIndex::Second),
-                                ],
+                            Triangle {
+                                vertices: [top, bottom, right],
+                                alive: TriangleStatus::Alive {
+                                    neighbors: [
+                                        n_n.prev().lookup(neighbors_n),
+                                        n.next().lookup(neighbors),
+                                        Some((j, TriangleIndex::Second)),
+                                    ],
+                                },
                             },
-                        },
-                    ];
-                    self.triangles.append(&mut new_triangles);
-                    self.triangles[i].alive = TriangleStatus::Dead {
-                        descendants: new_indices.to_vec(),
-                    };
-                    self.triangles[i_n].alive = TriangleStatus::Dead {
-                        descendants: new_indices.to_vec(),
-                    };
-                    if let TriangleStatus::Alive { ref mut neighbors } = self.triangles[i].alive {
-                        *n.next().lookup_mut(neighbors) = (j + 1, TriangleIndex::Second);
-                        *n.prev().lookup_mut(neighbors) = (j, TriangleIndex::Third);
+                        ];
+                        self.triangles.append(&mut new_triangles);
+                        if let TriangleStatus::Alive { ref mut neighbors } = self.triangles[i].alive
+                        {
+                            *n.next().lookup_mut(neighbors) = Some((j + 1, TriangleIndex::Second));
+                            *n.prev().lookup_mut(neighbors) = Some((j, TriangleIndex::Third));
+                        } else {
+                            unreachable!()
+                        };
+                        if let TriangleStatus::Alive { ref mut neighbors } =
+                            self.triangles[i_n].alive
+                        {
+                            *n.next().lookup_mut(neighbors) = Some((j, TriangleIndex::First));
+                            *n.prev().lookup_mut(neighbors) = Some((j + 1, TriangleIndex::First));
+                        } else {
+                            unreachable!()
+                        };
+                        self.triangles[i].alive = TriangleStatus::Dead {
+                            start: j,
+                            end: j + 2,
+                        };
+                        self.triangles[i_n].alive = TriangleStatus::Dead {
+                            start: j,
+                            end: j + 2,
+                        };
+                        Some([(j, TriangleIndex::Second), (j + 1, TriangleIndex::Third)])
                     } else {
                         unreachable!()
-                    };
-                    if let TriangleStatus::Alive { ref mut neighbors } = self.triangles[i_n].alive {
-                        *n.next().lookup_mut(neighbors) = (j, TriangleIndex::First);
-                        *n.prev().lookup_mut(neighbors) = (j + 1, TriangleIndex::First);
-                    } else {
-                        unreachable!()
-                    };
-                    Some([(j, TriangleIndex::Second), (j + 1, TriangleIndex::Third)])
+                    }
                 } else {
-                    unreachable!()
+                    None
                 }
             } else {
+                panic!("{:?} {:?}", self.triangles, (i, n));
                 unreachable!()
             }
         }
         pub fn insert(&mut self, p: Point) {
-            let mut queue: std::collections::VecDeque<(usize, TriangleIndex)> =
-                std::array::IntoIter::new(self.split_triangle(p)).collect();
+            let mut queue = std::collections::VecDeque::<(usize, TriangleIndex)>::new();
+            for &(i_new, n_new) in self.split_triangle(p).iter().flatten() {
+                queue.push_back((i_new, n_new))
+            }
             while let Some((i, n)) = queue.pop_front() {
                 for &(i_new, n_new) in self.flip_triangle(i, n).iter().flatten() {
                     queue.push_back((i_new, n_new))
@@ -367,9 +374,41 @@ pub mod voronoi {
         #[test]
         fn test_nearest_neighbour_box() {
             let p = Point { x: 0.3, y: 0.4 };
-            let bounds = Bounds { min: 0.0, max: 0.0 };
+            let bounds = Bounds { min: 0.0, max: 1.0 };
             let voronoi = Voronoi::from_box([bounds, bounds]);
             assert!((0.5 - voronoi.nearest_neighbour(p).1).abs() < f64::EPSILON);
+        }
+        #[test]
+        fn test_ccw_insert() {
+            let p = Point { x: 0.3, y: 0.4 };
+            let bounds = Bounds { min: 0.0, max: 0.0 };
+            let mut voronoi = Voronoi::from_box([bounds, bounds]);
+            voronoi.insert(p);
+            for i in 0..(voronoi.triangles.len()) {
+                for n in TriangleIndex::all() {
+                    assert!(voronoi.edge_contains(
+                        i,
+                        n,
+                        voronoi.points[n.prev().lookup(voronoi.triangles[i].vertices)]
+                    ))
+                }
+            }
+        }
+
+        #[test]
+        #[ignore]
+        fn test_insert_inside_outside() {
+            let p = Point { x: 0.3, y: 0.4 };
+            let q = Point { x: 0.9, y: 0.2 };
+            let r = Point { x: 2.0, y: 0.5 };
+            let bounds = Bounds { min: 0.0, max: 1.0 };
+            let mut voronoi = Voronoi::from_box([bounds, bounds]);
+
+            voronoi.insert(p);
+            voronoi.insert(q);
+            assert_eq!(voronoi.size(), 6);
+            voronoi.insert(r);
+            assert_eq!(voronoi.points.len(), 6);
         }
     }
 }
