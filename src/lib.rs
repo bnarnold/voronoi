@@ -5,8 +5,8 @@ pub mod voronoi {
     use svg::Document;
     #[derive(Copy, Clone, Debug)]
     pub struct Point {
-        x: f64,
-        y: f64,
+        pub x: f64,
+        pub y: f64,
     }
 
     #[derive(Clone, Debug, Copy)]
@@ -22,8 +22,8 @@ pub mod voronoi {
 
     #[derive(Clone, Copy, Debug)]
     pub struct Bounds {
-        min: f64,
-        max: f64,
+        pub min: f64,
+        pub max: f64,
     }
 
     #[derive(Clone, Debug)]
@@ -323,7 +323,6 @@ pub mod voronoi {
                 queue.push_back((i_new, n_new))
             }
             while let Some((i, n)) = queue.pop_front() {
-                let _x = dbg!(&self.triangles);
                 for &(i_new, n_new) in self.flip_triangle(i, n).iter().flatten() {
                     queue.push_back((i_new, n_new))
                 }
@@ -389,7 +388,6 @@ pub mod voronoi {
                     document = document.add(p);
                 }
             }
-            let _x = dbg!(&filename);
             svg::save(filename, &document).unwrap();
         }
     }
