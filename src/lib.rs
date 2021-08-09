@@ -481,9 +481,7 @@ pub mod voronoi {
             assert_eq!(delauney.points.len(), 6);
         }
 
-        #[test]
-        fn test_insert_many() {
-            const N: usize = 1000;
+        fn random_delauney(n: usize) -> Delauney {
             const SEED: u64 = 333;
             let mut rng = Pcg64::seed_from_u64(SEED);
 
@@ -493,16 +491,41 @@ pub mod voronoi {
             };
 
             let mut delauney = Delauney::from_box([bounds, bounds]);
-            for i in 0..N {
+            for _ in 0..n {
                 let p = Point {
                     x: rng.gen_range(0.0..1000.0),
                     y: rng.gen_range(0.0..1000.0),
                 };
-                if 0 == (i + 1) % 10 {
-                    delauney.save_svg(format!("./test{}.svg", i))
-                };
                 delauney.insert(p)
             }
+            delauney
+        }
+
+        #[test]
+        fn test_insert_many() {
+            const N: usize = 200_000;
+            let delauney = random_delauney(N);
+            assert_eq!(delauney.size(), N + 4);
+        }
+
+        #[test]
+        fn test_nearest_neighbour() {
+            const N: usize = 200_000;
+            let delauney = random_delauney(N);
+            const SEED: u64 = 3;
+            let mut rng = Pcg64::seed_from_u64(SEED);
+
+            let p = Point {
+                x: rng.gen_range(0.0..1000.0),
+                y: rng.gen_range(0.0..1000.0),
+            };
+            let (i, d) = delauney.nearest_neighbour(p);
+            let (i2, d2) = delauney.points.iter().map(|&q| p.dist(q)).enumerate().fold(
+                (0, f64::INFINITY),
+                |(i0, d0), (i, d)| if d <= d0 { (i, d) } else { (i0, d0) },
+            );
+            assert_eq!(i, i2);
+            assert!((d - d2).abs() < f64::EPSILON);
         }
     }
 }
