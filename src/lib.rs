@@ -6,7 +6,7 @@ pub mod voronoi {
         y: f64,
     }
 
-    #[derive(Clone, Debug)]
+    #[derive(Clone, Debug, Copy)]
     enum TriangleStatus {
         Alive {
             neighbors: [Option<(usize, TriangleIndex)>; 3],
@@ -30,11 +30,11 @@ pub mod voronoi {
     }
 
     #[derive(Clone, Debug)]
-    pub struct Voronoi {
+    pub struct Delauney {
         points: Vec<Point>,
         triangles: Vec<Triangle>,
     }
-    #[derive(Copy, Clone, Debug)]
+    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
     enum TriangleIndex {
         First,
         Second,
@@ -100,11 +100,11 @@ pub mod voronoi {
         }
     }
 
-    impl Voronoi {
+    impl Delauney {
         pub fn size(&self) -> usize {
             self.points.len()
         }
-        pub fn from_box(bounds: [Bounds; 2]) -> Voronoi {
+        pub fn from_box(bounds: [Bounds; 2]) -> Delauney {
             let bottom = Triangle {
                 vertices: [0, 1, 2],
                 alive: TriangleStatus::Alive {
@@ -124,7 +124,7 @@ pub mod voronoi {
                 .zip(ys.iter())
                 .map(|(&x, &y)| Point { x, y })
                 .collect();
-            Voronoi {
+            Delauney {
                 points,
                 triangles: vec![bottom, top],
             }
@@ -153,15 +153,18 @@ pub mod voronoi {
                 }
             }
         }
+
         fn triangle_contains(&self, i: usize, p: Point) -> bool {
             TriangleIndex::all().all(|n| self.edge_contains(i, n, p))
         }
+
         fn edge_contains(&self, i: usize, n: TriangleIndex, p: Point) -> bool {
             let tri = &self.triangles[i];
             let left = n.lookup(tri.vertices);
             let right = n.next().lookup(tri.vertices);
             self.points[left].ccw(self.points[right], p)
         }
+
         fn cos(&self, i: usize, n: TriangleIndex) -> f64 {
             let triangle = &self.triangles[i];
             let top = self.points[n.lookup(triangle.vertices)];
@@ -171,6 +174,7 @@ pub mod voronoi {
                 (right.x - top.x) * (left.x - top.x) + (right.y - top.y) * (left.y - top.y);
             scalar / (top.dist(left) * top.dist(right))
         }
+
         fn split_triangle(&mut self, p: Point) -> Option<[(usize, TriangleIndex); 3]> {
             if let Some(i) = self.contains(p) {
                 let triangle = &self.triangles[i];
@@ -179,12 +183,15 @@ pub mod voronoi {
                 let k = self.size();
                 self.points.push(p);
                 let new_indices = [j, j + 1, j + 2];
-                if let TriangleStatus::Alive { neighbors } = triangle.alive {
+                if let TriangleStatus::Alive {
+                    neighbors: old_neighbors,
+                } = triangle.alive
+                {
                     let mut new_triangles = TriangleIndex::build(|n| Triangle {
-                        vertices: [k, n.lookup(verts), n.next().lookup(verts)],
+                        vertices: [k, n.next().lookup(verts), n.prev().lookup(verts)],
                         alive: TriangleStatus::Alive {
                             neighbors: [
-                                n.lookup(neighbors),
+                                n.lookup(old_neighbors),
                                 Some((n.next().lookup(new_indices), TriangleIndex::Third)),
                                 Some((n.prev().lookup(new_indices), TriangleIndex::Second)),
                             ],
@@ -193,7 +200,7 @@ pub mod voronoi {
                     .to_vec();
                     self.triangles.append(&mut new_triangles);
                     for n in TriangleIndex::all() {
-                        if let Some((i_n, n_n)) = n.lookup(neighbors) {
+                        if let Some((i_n, n_n)) = n.lookup(old_neighbors) {
                             let neighbor_triangle = &mut self.triangles[i_n];
                             if let TriangleStatus::Alive { ref mut neighbors } =
                                 neighbor_triangle.alive
@@ -221,6 +228,7 @@ pub mod voronoi {
                 None
             }
         }
+
         fn flip_triangle(
             &mut self,
             i: usize,
@@ -241,6 +249,7 @@ pub mod voronoi {
                         neighbors: neighbors_n,
                     } = self.triangles[i_n].alive
                     {
+                        debug_assert_eq!(n_n.lookup(neighbors_n), Some((i, n)));
                         let mut new_triangles = vec![
                             Triangle {
                                 vertices: [top, left, bottom],
@@ -274,8 +283,8 @@ pub mod voronoi {
                         if let TriangleStatus::Alive { ref mut neighbors } =
                             self.triangles[i_n].alive
                         {
-                            *n.next().lookup_mut(neighbors) = Some((j, TriangleIndex::First));
-                            *n.prev().lookup_mut(neighbors) = Some((j + 1, TriangleIndex::First));
+                            *n_n.next().lookup_mut(neighbors) = Some((j, TriangleIndex::First));
+                            *n_n.prev().lookup_mut(neighbors) = Some((j + 1, TriangleIndex::First));
                         } else {
                             unreachable!()
                         };
@@ -287,7 +296,7 @@ pub mod voronoi {
                             start: j,
                             end: j + 2,
                         };
-                        Some([(j, TriangleIndex::Second), (j + 1, TriangleIndex::Third)])
+                        Some([(j, TriangleIndex::First), (j + 1, TriangleIndex::First)])
                     } else {
                         unreachable!()
                     }
@@ -295,10 +304,10 @@ pub mod voronoi {
                     None
                 }
             } else {
-                panic!("{:?} {:?}", self.triangles, (i, n));
                 unreachable!()
             }
         }
+
         pub fn insert(&mut self, p: Point) {
             let mut queue = std::collections::VecDeque::<(usize, TriangleIndex)>::new();
             for &(i_new, n_new) in self.split_triangle(p).iter().flatten() {
@@ -343,6 +352,9 @@ pub mod voronoi {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use rand::prelude::*;
+        use rand_pcg::Pcg64;
+
         #[test]
         fn test_ccw_orientation() {
             let origin = Point { x: 0.0, y: 0.0 };
@@ -366,49 +378,70 @@ pub mod voronoi {
             let q = Point { x: 0.9, y: 0.2 };
             let r = Point { x: 2.0, y: 0.5 };
             let bounds = Bounds { min: 0.0, max: 1.0 };
-            let voronoi = Voronoi::from_box([bounds, bounds]);
-            assert_eq!(voronoi.contains(p), Some(1));
-            assert_eq!(voronoi.contains(q), Some(0));
-            assert_eq!(voronoi.contains(r), None);
+            let delauney = Delauney::from_box([bounds, bounds]);
+            assert_eq!(delauney.contains(p), Some(1));
+            assert_eq!(delauney.contains(q), Some(0));
+            assert_eq!(delauney.contains(r), None);
         }
         #[test]
         fn test_nearest_neighbour_box() {
             let p = Point { x: 0.3, y: 0.4 };
             let bounds = Bounds { min: 0.0, max: 1.0 };
-            let voronoi = Voronoi::from_box([bounds, bounds]);
-            assert!((0.5 - voronoi.nearest_neighbour(p).1).abs() < f64::EPSILON);
+            let delauney = Delauney::from_box([bounds, bounds]);
+            assert!((0.5 - delauney.nearest_neighbour(p).1).abs() < f64::EPSILON);
         }
         #[test]
         fn test_ccw_insert() {
             let p = Point { x: 0.3, y: 0.4 };
             let bounds = Bounds { min: 0.0, max: 0.0 };
-            let mut voronoi = Voronoi::from_box([bounds, bounds]);
-            voronoi.insert(p);
-            for i in 0..(voronoi.triangles.len()) {
+            let mut delauney = Delauney::from_box([bounds, bounds]);
+            delauney.insert(p);
+            for i in 0..(delauney.triangles.len()) {
                 for n in TriangleIndex::all() {
-                    assert!(voronoi.edge_contains(
+                    assert!(delauney.edge_contains(
                         i,
                         n,
-                        voronoi.points[n.prev().lookup(voronoi.triangles[i].vertices)]
+                        delauney.points[n.prev().lookup(delauney.triangles[i].vertices)]
                     ))
                 }
             }
         }
 
         #[test]
-        #[ignore]
         fn test_insert_inside_outside() {
             let p = Point { x: 0.3, y: 0.4 };
             let q = Point { x: 0.9, y: 0.2 };
             let r = Point { x: 2.0, y: 0.5 };
             let bounds = Bounds { min: 0.0, max: 1.0 };
-            let mut voronoi = Voronoi::from_box([bounds, bounds]);
+            let mut delauney = Delauney::from_box([bounds, bounds]);
 
-            voronoi.insert(p);
-            voronoi.insert(q);
-            assert_eq!(voronoi.size(), 6);
-            voronoi.insert(r);
-            assert_eq!(voronoi.points.len(), 6);
+            delauney.insert(p);
+            assert!(delauney.contains(q).is_some());
+            delauney.insert(q);
+            assert_eq!(delauney.size(), 6);
+            delauney.insert(r);
+            assert_eq!(delauney.points.len(), 6);
+        }
+
+        #[test]
+        fn test_insert_many() {
+            const N: usize = 10;
+            const SEED: u64 = 333;
+            let mut rng = Pcg64::seed_from_u64(SEED);
+
+            let bounds = Bounds {
+                min: -1.0,
+                max: 2.0,
+            };
+
+            let mut delauney = Delauney::from_box([bounds, bounds]);
+            for _ in 0..N {
+                let p = Point {
+                    x: rng.gen_range(0.0..1.0),
+                    y: rng.gen_range(0.0..1.0),
+                };
+                delauney.insert(p)
+            }
         }
     }
 }
