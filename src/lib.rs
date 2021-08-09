@@ -14,9 +14,15 @@ pub mod voronoi {
         Alive {
             neighbors: [Option<(usize, TriangleIndex)>; 3],
         },
-        Dead {
-            start: usize,
-            end: usize,
+        Split {
+            at: usize,
+            first_child: usize,
+        },
+        Flipped {
+            at: TriangleIndex,
+            with: usize,
+            ccw: bool,
+            first_child: usize,
         },
     }
 
@@ -143,17 +149,36 @@ pub mod voronoi {
                     return None;
                 }
             }
-            loop {
-                match self.triangles[i].alive {
+            'depth_search: loop {
+                let tri = &self.triangles[i];
+                match tri.alive {
                     TriangleStatus::Alive { .. } => return Some(i),
-                    TriangleStatus::Dead { start, end } => {
-                        for j in start..end {
-                            if self.triangle_contains(j, p) {
-                                i = j;
-                                break;
+                    TriangleStatus::Split { at, first_child } => {
+                        let pivot = self.points[at];
+                        for n in TriangleIndex::all() {
+                            if pivot.ccw(self.points[n.next().lookup(tri.vertices)], p)
+                                && !pivot.ccw(self.points[n.prev().lookup(tri.vertices)], p)
+                            {
+                                i = first_child + n.lookup([0, 1, 2]);
+                                continue 'depth_search;
                             }
                         }
-                        continue;
+                    }
+                    TriangleStatus::Flipped {
+                        at,
+                        ccw,
+                        with,
+                        first_child,
+                    } => {
+                        let pivot = self.points[at.lookup(tri.vertices)];
+                        let opposite = self.points[with];
+                        i = first_child + {
+                            if ccw == pivot.ccw(opposite, p) {
+                                0
+                            } else {
+                                1
+                            }
+                        }
                     }
                 }
             }
@@ -210,9 +235,9 @@ pub mod voronoi {
                             n.lookup(old_neighbors),
                         );
                     }
-                    self.triangles[i].alive = TriangleStatus::Dead {
-                        start: j,
-                        end: j + 3,
+                    self.triangles[i].alive = TriangleStatus::Split {
+                        at: k,
+                        first_child: j,
                     };
                     Some([
                         (j, TriangleIndex::First),
@@ -297,13 +322,17 @@ pub mod voronoi {
                             n.next().lookup(neighbors),
                         );
 
-                        self.triangles[i].alive = TriangleStatus::Dead {
-                            start: j,
-                            end: j + 2,
+                        self.triangles[i].alive = TriangleStatus::Flipped {
+                            at: n,
+                            with: bottom,
+                            ccw: false,
+                            first_child: j,
                         };
-                        self.triangles[i_n].alive = TriangleStatus::Dead {
-                            start: j,
-                            end: j + 2,
+                        self.triangles[i_n].alive = TriangleStatus::Flipped {
+                            at: n_n,
+                            with: top,
+                            ccw: true,
+                            first_child: j,
                         };
                         Some([(j, TriangleIndex::First), (j + 1, TriangleIndex::First)])
                     } else {
@@ -350,7 +379,6 @@ pub mod voronoi {
 
         fn generate_triangle(&self, i: usize) -> Option<Path> {
             match self.triangles[i].alive {
-                TriangleStatus::Dead { .. } => None,
                 TriangleStatus::Alive { .. } => {
                     let points: Vec<(f64, f64)> = self.triangles[i]
                         .vertices
@@ -370,10 +398,11 @@ pub mod voronoi {
                         .set("d", data);
                     Some(path)
                 }
+                _ => None,
             }
         }
 
-        fn save_svg(&self, filename: String) -> () {
+        pub fn save_svg(&self, filename: String) -> () {
             let mut document = Document::new().set(
                 "viewBox",
                 (
@@ -503,12 +532,13 @@ pub mod voronoi {
 
         #[test]
         fn test_insert_many() {
-            const N: usize = 200_000;
+            const N: usize = 1000;
             let delauney = random_delauney(N);
             assert_eq!(delauney.size(), N + 4);
         }
 
         #[test]
+        #[ignore]
         fn test_nearest_neighbour() {
             const N: usize = 200_000;
             let delauney = random_delauney(N);
