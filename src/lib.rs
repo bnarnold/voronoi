@@ -149,9 +149,10 @@ pub mod voronoi {
             } else {
                 0
             };
-            loop {
-                match self.triangles[i].alive {
-                    TriangleStatus::Alive { .. } => return Some(i),
+            'depth_search: loop {
+                let tri = &self.triangles[i];
+                match tri.alive {
+                    TriangleStatus::Alive { .. } => return i,
                     TriangleStatus::Split { at, first_child } => {
                         let pivot = self.points[at];
                         for n in TriangleIndex::all() {
@@ -187,17 +188,6 @@ pub mod voronoi {
             self.points.iter()
         }
 
-        fn triangle_contains(&self, i: usize, p: Point) -> bool {
-            TriangleIndex::all().all(|n| self.edge_contains(i, n, p))
-        }
-
-        fn edge_contains(&self, i: usize, n: TriangleIndex, p: Point) -> bool {
-            let tri = &self.triangles[i];
-            let left = n.lookup(tri.vertices);
-            let right = n.next().lookup(tri.vertices);
-            self.points[left].ccw(self.points[right], p)
-        }
-
         fn cos(&self, i: usize, n: TriangleIndex) -> f64 {
             let triangle = &self.triangles[i];
             let top = self.points[n.lookup(triangle.vertices)];
@@ -210,47 +200,46 @@ pub mod voronoi {
 
         fn split_triangle(&mut self, p: Point) -> Option<[(usize, TriangleIndex); 3]> {
             let i = self.contains(p);
-                let triangle = &self.triangles[i];
-                let verts = triangle.vertices;
-                let j = self.triangles.len();
-                let k = self.size();
-                self.points.push(p);
-                let new_indices = [j, j + 1, j + 2];
-                if let TriangleStatus::Alive {
-                    neighbors: old_neighbors,
-                } = triangle.alive
-                {
-                    let mut new_triangles = TriangleIndex::build(|n| Triangle {
-                        vertices: [k, n.next().lookup(verts), n.prev().lookup(verts)],
-                        alive: TriangleStatus::Alive {
-                            neighbors: [
-                                None,
-                                Some((n.next().lookup(new_indices), TriangleIndex::Third)),
-                                Some((n.prev().lookup(new_indices), TriangleIndex::Second)),
-                            ],
-                        },
-                    })
-                    .to_vec();
-                    self.triangles.append(&mut new_triangles);
-                    for n in TriangleIndex::all() {
-                        self.link_half_edges(
-                            (n.lookup(new_indices), TriangleIndex::First),
-                            n.lookup(old_neighbors),
-                        );
-                    }
-                    self.triangles[i].alive = TriangleStatus::Split {
-                        at: k,
-                        first_child: j,
-                    };
-                    Some([
-                        (j, TriangleIndex::First),
-                        (j + 1, TriangleIndex::First),
-                        (j + 2, TriangleIndex::First),
-                    ])
-                } else {
-                    panic!("Splitting dead triangle")
+            let triangle = &self.triangles[i];
+            let verts = triangle.vertices;
+            let j = self.triangles.len();
+            let k = self.size();
+            self.points.push(p);
+            let new_indices = [j, j + 1, j + 2];
+            if let TriangleStatus::Alive {
+                neighbors: old_neighbors,
+            } = triangle.alive
+            {
+                let mut new_triangles = TriangleIndex::build(|n| Triangle {
+                    vertices: [k, n.next().lookup(verts), n.prev().lookup(verts)],
+                    alive: TriangleStatus::Alive {
+                        neighbors: [
+                            None,
+                            Some((n.next().lookup(new_indices), TriangleIndex::Third)),
+                            Some((n.prev().lookup(new_indices), TriangleIndex::Second)),
+                        ],
+                    },
+                })
+                .to_vec();
+                self.triangles.append(&mut new_triangles);
+                for n in TriangleIndex::all() {
+                    self.link_half_edges(
+                        (n.lookup(new_indices), TriangleIndex::First),
+                        n.lookup(old_neighbors),
+                    );
                 }
-            
+                self.triangles[i].alive = TriangleStatus::Split {
+                    at: k,
+                    first_child: j,
+                };
+                Some([
+                    (j, TriangleIndex::First),
+                    (j + 1, TriangleIndex::First),
+                    (j + 2, TriangleIndex::First),
+                ])
+            } else {
+                panic!("Splitting dead triangle")
+            }
         }
 
         fn link_half_edges(
@@ -471,22 +460,6 @@ pub mod voronoi {
             let bounds = Bounds { min: 0.0, max: 1.0 };
             let delauney = Delauney::from_box([bounds, bounds]);
             assert!((0.5 - delauney.nearest_neighbour(p).1).abs() < f64::EPSILON);
-        }
-        #[test]
-        fn test_ccw_insert() {
-            let p = Point { x: 0.3, y: 0.4 };
-            let bounds = Bounds { min: 0.0, max: 0.0 };
-            let mut delauney = Delauney::from_box([bounds, bounds]);
-            delauney.insert(p);
-            for i in 0..(delauney.triangles.len()) {
-                for n in TriangleIndex::all() {
-                    assert!(delauney.edge_contains(
-                        i,
-                        n,
-                        delauney.points[n.prev().lookup(delauney.triangles[i].vertices)]
-                    ))
-                }
-            }
         }
 
         #[test]

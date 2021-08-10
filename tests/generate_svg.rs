@@ -23,7 +23,7 @@ fn random_delauney(n: usize) -> Delauney {
 fn test_uniform_dist() {
     const N: usize = 20000;
     let delauney = random_delauney(N);
-    delauney.save_svg(format!("test_output/uniform{}.svg", N));
+    delauney.save_svg(format!("target/test_output/uniform{}.svg", N));
 }
 
 #[test]
@@ -41,5 +41,5 @@ fn test_ellipse() {
             y: 500.0 + 250.0 * t.sin(),
         });
     }
-    delauney.save_svg(format!("test_output/ellipse{}.svg", N));
+    delauney.save_svg(format!("target/test_output/ellipse{}.svg", N));
 }
