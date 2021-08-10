@@ -27,7 +27,10 @@ fn from_scale(c: &mut Criterion) {
     for size in [SCALE, 2 * SCALE, 4 * SCALE, 8 * SCALE, 16 * SCALE].iter() {
         group.throughput(Throughput::Bytes(*size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, &size| {
-            b.iter(|| black_box(insert_many(size)));
+            b.iter(|| {
+                insert_many(size);
+                black_box(())
+            });
         });
     }
     group.finish();

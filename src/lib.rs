@@ -246,7 +246,7 @@ pub mod voronoi {
             &mut self,
             start: (usize, TriangleIndex),
             end_opt: Option<(usize, TriangleIndex)>,
-        ) -> () {
+        ) {
             if let TriangleStatus::Alive { ref mut neighbors } = self.triangles[start.0].alive {
                 *(start.1).lookup_mut(neighbors) = end_opt;
             } else {
@@ -389,7 +389,7 @@ pub mod voronoi {
             }
         }
 
-        pub fn save_svg(&self, filename: String) -> () {
+        pub fn save_svg(&self, filename: String) {
             let mut document = Document::new().set(
                 "viewBox",
                 (
@@ -413,7 +413,7 @@ pub mod voronoi {
             ((other.x - self.x).powi(2) + (other.y - self.y).powi(2)).sqrt()
         }
         fn ccw(self, p1: Point, p2: Point) -> bool {
-            return (p2.x - self.x) * (p1.y - self.y) <= (p2.y - self.y) * (p1.x - self.x);
+            (p2.x - self.x) * (p1.y - self.y) <= (p2.y - self.y) * (p1.x - self.x)
         }
     }
 
