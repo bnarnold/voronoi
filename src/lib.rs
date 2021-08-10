@@ -404,7 +404,7 @@ pub mod voronoi {
                     document = document.add(p);
                 }
             }
-            svg::save(filename, &document).unwrap();
+            svg::save(filename, &document).unwrap_or(());
         }
     }
 
