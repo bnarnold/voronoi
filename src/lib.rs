@@ -14,9 +14,15 @@ pub mod voronoi {
         Alive {
             neighbors: [Option<(usize, TriangleIndex)>; 3],
         },
-        Dead {
-            start: usize,
-            end: usize,
+        Split {
+            at: usize,
+            first_child: usize,
+        },
+        Flipped {
+            at: TriangleIndex,
+            with: usize,
+            ccw: bool,
+            first_child: usize,
         },
     }
 
@@ -145,15 +151,33 @@ pub mod voronoi {
             };
             loop {
                 match self.triangles[i].alive {
-                    TriangleStatus::Alive { .. } => return i,
-                    TriangleStatus::Dead { start, end } => {
-                        for j in start..end {
-                            if self.triangle_contains(j, p) {
-                                i = j;
-                                break;
+                    TriangleStatus::Alive { .. } => return Some(i),
+                    TriangleStatus::Split { at, first_child } => {
+                        let pivot = self.points[at];
+                        for n in TriangleIndex::all() {
+                            if pivot.ccw(self.points[n.next().lookup(tri.vertices)], p)
+                                && !pivot.ccw(self.points[n.prev().lookup(tri.vertices)], p)
+                            {
+                                i = first_child + n.lookup([0, 1, 2]);
+                                continue 'depth_search;
                             }
                         }
-                        continue;
+                    }
+                    TriangleStatus::Flipped {
+                        at,
+                        ccw,
+                        with,
+                        first_child,
+                    } => {
+                        let pivot = self.points[at.lookup(tri.vertices)];
+                        let opposite = self.points[with];
+                        i = first_child + {
+                            if ccw == pivot.ccw(opposite, p) {
+                                0
+                            } else {
+                                1
+                            }
+                        }
                     }
                 }
             }
@@ -186,46 +210,47 @@ pub mod voronoi {
 
         fn split_triangle(&mut self, p: Point) -> Option<[(usize, TriangleIndex); 3]> {
             let i = self.contains(p);
-            let triangle = &self.triangles[i];
-            let verts = triangle.vertices;
-            let j = self.triangles.len();
-            let k = self.size();
-            self.points.push(p);
-            let new_indices = [j, j + 1, j + 2];
-            if let TriangleStatus::Alive {
-                neighbors: old_neighbors,
-            } = triangle.alive
-            {
-                let mut new_triangles = TriangleIndex::build(|n| Triangle {
-                    vertices: [k, n.next().lookup(verts), n.prev().lookup(verts)],
-                    alive: TriangleStatus::Alive {
-                        neighbors: [
-                            None,
-                            Some((n.next().lookup(new_indices), TriangleIndex::Third)),
-                            Some((n.prev().lookup(new_indices), TriangleIndex::Second)),
-                        ],
-                    },
-                })
-                .to_vec();
-                self.triangles.append(&mut new_triangles);
-                for n in TriangleIndex::all() {
-                    self.link_half_edges(
-                        (n.lookup(new_indices), TriangleIndex::First),
-                        n.lookup(old_neighbors),
-                    );
+                let triangle = &self.triangles[i];
+                let verts = triangle.vertices;
+                let j = self.triangles.len();
+                let k = self.size();
+                self.points.push(p);
+                let new_indices = [j, j + 1, j + 2];
+                if let TriangleStatus::Alive {
+                    neighbors: old_neighbors,
+                } = triangle.alive
+                {
+                    let mut new_triangles = TriangleIndex::build(|n| Triangle {
+                        vertices: [k, n.next().lookup(verts), n.prev().lookup(verts)],
+                        alive: TriangleStatus::Alive {
+                            neighbors: [
+                                None,
+                                Some((n.next().lookup(new_indices), TriangleIndex::Third)),
+                                Some((n.prev().lookup(new_indices), TriangleIndex::Second)),
+                            ],
+                        },
+                    })
+                    .to_vec();
+                    self.triangles.append(&mut new_triangles);
+                    for n in TriangleIndex::all() {
+                        self.link_half_edges(
+                            (n.lookup(new_indices), TriangleIndex::First),
+                            n.lookup(old_neighbors),
+                        );
+                    }
+                    self.triangles[i].alive = TriangleStatus::Split {
+                        at: k,
+                        first_child: j,
+                    };
+                    Some([
+                        (j, TriangleIndex::First),
+                        (j + 1, TriangleIndex::First),
+                        (j + 2, TriangleIndex::First),
+                    ])
+                } else {
+                    panic!("Splitting dead triangle")
                 }
-                self.triangles[i].alive = TriangleStatus::Dead {
-                    start: j,
-                    end: j + 3,
-                };
-                Some([
-                    (j, TriangleIndex::First),
-                    (j + 1, TriangleIndex::First),
-                    (j + 2, TriangleIndex::First),
-                ])
-            } else {
-                panic!("Splitting dead triangle")
-            }
+            
         }
 
         fn link_half_edges(
@@ -298,13 +323,17 @@ pub mod voronoi {
                             n.next().lookup(neighbors),
                         );
 
-                        self.triangles[i].alive = TriangleStatus::Dead {
-                            start: j,
-                            end: j + 2,
+                        self.triangles[i].alive = TriangleStatus::Flipped {
+                            at: n,
+                            with: bottom,
+                            ccw: false,
+                            first_child: j,
                         };
-                        self.triangles[i_n].alive = TriangleStatus::Dead {
-                            start: j,
-                            end: j + 2,
+                        self.triangles[i_n].alive = TriangleStatus::Flipped {
+                            at: n_n,
+                            with: top,
+                            ccw: true,
+                            first_child: j,
                         };
                         Some([(j, TriangleIndex::First), (j + 1, TriangleIndex::First)])
                     } else {
@@ -348,7 +377,6 @@ pub mod voronoi {
 
         fn generate_triangle(&self, i: usize) -> Option<Path> {
             match self.triangles[i].alive {
-                TriangleStatus::Dead { .. } => None,
                 TriangleStatus::Alive { .. } => {
                     let points: Vec<(f64, f64)> = self.triangles[i]
                         .vertices
@@ -368,6 +396,7 @@ pub mod voronoi {
                         .set("d", data);
                     Some(path)
                 }
+                _ => None,
             }
         }
 
@@ -494,14 +523,14 @@ pub mod voronoi {
 
         #[test]
         fn test_insert_many() {
-            const N: usize = 50_000;
+            const N: usize = 1_000;
             let delauney = random_delauney(N);
             assert_eq!(delauney.size(), N + 4);
         }
 
         #[test]
         fn test_nearest_neighbour() {
-            const N: usize = 50_000;
+            const N: usize = 1_000;
             let delauney = random_delauney(N);
             const SEED: u64 = 3;
             let mut rng = Pcg64::seed_from_u64(SEED);
